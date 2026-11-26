@@ -15,6 +15,15 @@ let magicDirection = 1; // 記錄施法時鎖定的方向
 let spaceIsDown = false; // 記錄空白鍵是否已按住以避免重複觸發
 let activeEffects = []; // 儲存目前畫面上飛行中的魔法特效
 
+// 數學測驗與互動特效狀態
+let wasNearChar2 = false; // 記錄上一幀是否接近角色二
+let currentQuiz = null; // 儲存目前的數學加法題目與選項
+let optionButtons = []; // 儲存四個選項按鈕的座標與尺寸
+let feedbackEffectType = null; // "firework"（煙火）或 "lightning"（閃電）
+let feedbackEffectEndTime = 0; // 特效結束的時間點（毫秒）
+let fireworkParticles = []; // 儲存煙火粒子
+let nextFireworkTime = 0; // 下一次施放煙火的時間點
+
 const frameCountInSprite = 10; // 設定精靈圖包含的影格數
 const frameWidth = 139.5; // 設定每個影格的寬度（1395 除以 10）
 const frameHeight = 196; // 設定每個影格的高度
@@ -124,6 +133,15 @@ function draw() { // 每個畫面更新一次背景與角色
   const proximityThreshold = max(220, (characterWidth + char2BaseWidth) * 0.9);
   const isChar1NearChar2 = abs(characterX - char2X) <= proximityThreshold;
 
+  // 剛接近角色二時產生新題目；遠離時重置狀態
+  if (isChar1NearChar2 && !wasNearChar2) {
+    generateAdditionQuiz();
+  } else if (!isChar1NearChar2 && wasNearChar2) {
+    currentQuiz = null;
+    optionButtons = [];
+  }
+  wasNearChar2 = isChar1NearChar2;
+
   // 繪製角色二：接近時改播 action，遠離時恢復 stop；角色一在角色二左邊時水平翻轉
   if (char2StopSprite && char2ActionSprite) {
     const useAction = isChar1NearChar2;
@@ -200,6 +218,269 @@ function draw() { // 每個畫面更新一次背景與角色
     // 移除超出畫布範圍的特效
     if (eff.x < -effDrawWidth || eff.x > width + effDrawWidth) {
       activeEffects.splice(i, 1);
+    }
+  }
+
+  // 當角色一接近角色二時，繪製上方半透明黃色數學加法題目方框與四個選項按鈕
+  if (isChar1NearChar2 && currentQuiz) {
+    drawQuizBox();
+  } else {
+    optionButtons = [];
+    cursor(ARROW);
+  }
+
+  // 繪製答題後的 3 秒煙火或 3 秒閃電特效
+  updateAndDrawFeedbackEffect();
+}
+
+// 隨機產生一題數學加法選擇題與四個選項
+function generateAdditionQuiz() {
+  const num1 = floor(random(1, 50));
+  const num2 = floor(random(1, 50));
+  const answer = num1 + num2;
+
+  const choicesSet = new Set([answer]);
+  while (choicesSet.size < 4) {
+    const offset = floor(random(-12, 13));
+    const candidate = answer + offset;
+    if (offset !== 0 && candidate > 0) {
+      choicesSet.add(candidate);
+    }
+  }
+
+  const options = shuffle(Array.from(choicesSet));
+  currentQuiz = {
+    question: `${num1} + ${num2} = ?`,
+    answer: answer,
+    options: options,
+    selectedIndex: -1,
+    isCorrect: null
+  };
+}
+
+// 繪製上方半透明黃色方框（高為畫布 1/2、寬為畫布 1/3、水平置中、靠近上方、透明度 90）
+function drawQuizBox() {
+  const boxW = width / 3;
+  const boxH = height / 2;
+  const boxX = (width - boxW) / 2; // 水平置中對準畫布中間
+  const boxY = 16; // 靠近畫布上方
+
+  push();
+  rectMode(CORNER);
+  fill(255, 235, 59, 90); // 黃色且 alpha 透明度為 90
+  stroke(255, 193, 7, 200);
+  strokeWeight(3);
+  rect(boxX, boxY, boxW, boxH, 16);
+
+  // 顯示數學加法題目
+  noStroke();
+  fill(30, 30, 30);
+  textAlign(CENTER, CENTER);
+  const titleSize = constrain(min(boxW * 0.11, boxH * 0.12), 18, 38);
+  textSize(titleSize);
+  textStyle(BOLD);
+  text(currentQuiz.question, boxX + boxW / 2, boxY + boxH * 0.22);
+
+  // 計算並繪製四個選項按鈕（2x2 排列）
+  const labels = ["A", "B", "C", "D"];
+  const btnCols = 2;
+  const btnRows = 2;
+  const padX = boxW * 0.08;
+  const gapX = boxW * 0.06;
+  const gapY = boxH * 0.07;
+  const areaTop = boxY + boxH * 0.38;
+  const areaHeight = boxH * 0.54;
+  const btnW = (boxW - padX * 2 - gapX) / btnCols;
+  const btnH = (areaHeight - gapY) / btnRows;
+
+  optionButtons = [];
+  let hoveringAny = false;
+
+  for (let i = 0; i < 4; i++) {
+    const col = i % btnCols;
+    const row = floor(i / btnCols);
+    const bx = boxX + padX + col * (btnW + gapX);
+    const by = areaTop + row * (btnH + gapY);
+
+    const isHover = mouseX >= bx && mouseX <= bx + btnW && mouseY >= by && mouseY <= by + btnH;
+    if (isHover) {
+      hoveringAny = true;
+    }
+
+    optionButtons.push({
+      x: bx,
+      y: by,
+      w: btnW,
+      h: btnH,
+      value: currentQuiz.options[i],
+      index: i
+    });
+
+    // 按鈕底色（滑鼠懸停或作答後變色提示）
+    if (currentQuiz.selectedIndex === i) {
+      fill(currentQuiz.isCorrect ? color(76, 175, 80, 230) : color(244, 67, 54, 230));
+    } else if (isHover) {
+      fill(255, 255, 255, 245);
+    } else {
+      fill(255, 255, 255, 210);
+    }
+
+    stroke(80, 80, 80, 180);
+    strokeWeight(2);
+    rect(bx, by, btnW, btnH, 10);
+
+    noStroke();
+    fill(currentQuiz.selectedIndex === i ? 255 : 25);
+    textSize(constrain(min(btnW * 0.22, btnH * 0.42), 14, 28));
+    text(`${labels[i]}. ${currentQuiz.options[i]}`, bx + btnW / 2, by + btnH / 2);
+  }
+
+  cursor(hoveringAny ? HAND : ARROW);
+  pop();
+}
+
+// 觸發 3 秒煙火特效
+function triggerFireworks(durationMs) {
+  feedbackEffectType = "firework";
+  feedbackEffectEndTime = millis() + durationMs;
+  fireworkParticles = [];
+  nextFireworkTime = 0;
+}
+
+// 觸發 3 秒閃電特效
+function triggerLightning(durationMs) {
+  feedbackEffectType = "lightning";
+  feedbackEffectEndTime = millis() + durationMs;
+}
+
+// 在指定位置產生一朵煙火爆炸粒子
+function spawnFireworkBurst(cx, cy) {
+  const colors = [
+    [255, 82, 82],
+    [255, 215, 64],
+    [64, 196, 255],
+    [105, 240, 174],
+    [224, 64, 251],
+    [255, 110, 64]
+  ];
+  const baseColor = random(colors);
+  const count = 48;
+  for (let i = 0; i < count; i++) {
+    const angle = (TWO_PI * i) / count + random(-0.08, 0.08);
+    const speed = random(2.5, 8.5);
+    fireworkParticles.push({
+      x: cx,
+      y: cy,
+      vx: cos(angle) * speed,
+      vy: sin(angle) * speed,
+      alpha: 255,
+      size: random(4, 8),
+      color: baseColor
+    });
+  }
+}
+
+// 繪製單道閃電折線
+function drawLightningBolt(startX, startY, endY) {
+  let currX = startX;
+  let currY = startY;
+  const segments = 14;
+  const stepY = (endY - startY) / segments;
+
+  // 外層藍白光暈
+  stroke(140, 210, 255, 160);
+  strokeWeight(10);
+  noFill();
+  beginShape();
+  vertex(currX, currY);
+  const points = [{ x: currX, y: currY }];
+  for (let i = 1; i <= segments; i++) {
+    currX += random(-38, 38);
+    currY += stepY;
+    vertex(currX, currY);
+    points.push({ x: currX, y: currY });
+  }
+  endShape();
+
+  // 內層亮白閃電核心
+  stroke(255, 255, 230, 245);
+  strokeWeight(4);
+  beginShape();
+  for (const pt of points) {
+    vertex(pt.x, pt.y);
+  }
+  endShape();
+}
+
+// 更新並繪製 3 秒煙火或閃電特效
+function updateAndDrawFeedbackEffect() {
+  const now = millis();
+
+  if (feedbackEffectType === "firework") {
+    if (now < feedbackEffectEndTime && now >= nextFireworkTime) {
+      spawnFireworkBurst(random(width * 0.15, width * 0.85), random(height * 0.15, height * 0.55));
+      nextFireworkTime = now + 450;
+    }
+
+    push();
+    noStroke();
+    for (let i = fireworkParticles.length - 1; i >= 0; i--) {
+      const p = fireworkParticles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.12; // 重力下墜
+      p.vx *= 0.98;
+      p.alpha -= 4.5;
+
+      fill(p.color[0], p.color[1], p.color[2], max(0, p.alpha));
+      ellipse(p.x, p.y, p.size, p.size);
+
+      if (p.alpha <= 0) {
+        fireworkParticles.splice(i, 1);
+      }
+    }
+    pop();
+
+    if (now >= feedbackEffectEndTime && fireworkParticles.length === 0) {
+      feedbackEffectType = null;
+    }
+  } else if (feedbackEffectType === "lightning") {
+    if (now < feedbackEffectEndTime) {
+      push();
+      // 隨機閃爍畫面強光
+      if (random() < 0.45) {
+        noStroke();
+        fill(255, 255, 255, random(60, 140));
+        rect(0, 0, width, height);
+      }
+      // 隨機產生 1～2 道劈落閃電
+      if (random() < 0.7) {
+        drawLightningBolt(random(width * 0.15, width * 0.85), 0, height * random(0.75, 1.0));
+        if (random() < 0.4) {
+          drawLightningBolt(random(width * 0.15, width * 0.85), 0, height * random(0.65, 0.95));
+        }
+      }
+      pop();
+    } else {
+      feedbackEffectType = null;
+    }
+  }
+}
+
+function mousePressed() {
+  if (!currentQuiz || optionButtons.length === 0) return;
+
+  for (const btn of optionButtons) {
+    if (mouseX >= btn.x && mouseX <= btn.x + btn.w && mouseY >= btn.y && mouseY <= btn.y + btn.h) {
+      currentQuiz.selectedIndex = btn.index;
+      currentQuiz.isCorrect = btn.value === currentQuiz.answer;
+
+      if (currentQuiz.isCorrect) {
+        triggerFireworks(3000); // 答對放 3 秒煙火
+      } else {
+        triggerLightning(3000); // 答錯產生 3 秒閃電
+      }
+      break;
     }
   }
 }
